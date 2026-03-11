@@ -1,6 +1,6 @@
 # TrackPlacement
 
-A server-side Bedrock Dedicated Server (BDS) behavior pack that monitors placement and use of dangerous items and blocks. Alerts are broadcast in-game to all online players and logged to the server console. No cheats required. No client-side installation needed.
+A server-side Bedrock Dedicated Server (BDS) behavior pack that monitors placement and use of dangerous items and blocks. Alerts are broadcast in-game to all online players and logged to the server console. No cheats required! No client-side installation or downloads needed. Works with vanilla Bedrock (1.21+).
 
 ## Features
 
@@ -13,17 +13,17 @@ A server-side Bedrock Dedicated Server (BDS) behavior pack that monitors placeme
 - Rate-limiting with configurable windows — bursts are summarised rather than spammed
 - Nearby events are clustered by location to reduce noise
 - All events logged to console regardless of in-game alert settings
-- Operator commands available when Beta APIs are enabled on the world
+- Operator commands available when ONLY Beta APIs are enabled on the world
 
 ## Requirements
 
 - Minecraft Bedrock Dedicated Server 1.21.0 or later
 - `@minecraft/server` API version 2.1.0 (stable, no experiments required for core tracking)
-- Beta APIs experiment enabled on the world **only if** you want operator chat commands
+- NOTE: Beta APIs experiment enabled on the world **only if** you want operator chat commands
 
 ## Installation
 
-1. Copy `TrackPlacement_BP/` into your server's `behavior_packs/` directory.
+1. Copy `TrackPlacement_BP/` into your server's central `behavior_packs/` directory.
 
 2. Register the pack for your world by editing `worlds/<world-name>/world_behavior_packs.json`:
 
@@ -45,12 +45,12 @@ TrackPlacement_BP/
 ├── manifest.json
 └── scripts/
     ├── main.js              — core tracking logic and operator commands
-    └── tracked_blocks.js    — configuration: what to track and how
+    └── tracked_blocks.js    — **configuration**: what to track and how to notify
 ```
 
 ## Configuration
 
-All tracking is configured in `scripts/tracked_blocks.js`. Edit this file to add, remove, or adjust tracked items. Changes take effect on server restart.
+All tracking is **configured** in `scripts/tracked_blocks.js`. Edit this file to add, remove, or adjust tracked items. Changes take effect on server restart.
 
 ### Global settings
 
