@@ -13,7 +13,6 @@ on:
         required: false
 
 env:
-  # Opt-in to Node 24 to silence deprecation warnings in 2026
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -26,25 +25,24 @@ jobs:
       # Step 1: Create the distribution files
       - name: Create Release Archives
         run: |
-          # Create the .mcpack for CurseForge
           zip -r TrackPlacement.mcpack . -x "*.git*" ".github/*" "README.md" ".gitignore"
-          # Create the .zip for Modrinth
           cp TrackPlacement.mcpack TrackPlacement.zip
 
-      # Step 2: Upload to Modrinth (Official Action)
+      # Step 2: Upload to Modrinth
       - name: Upload to Modrinth
         if: github.event.inputs.version_override != '' || github.event.release.tag_name != ''
         continue-on-error: true
-        uses: modrinth/minotaur@v2.9.0
+        uses: Kir-Antipov/mc-publish@v3.3
         with:
-          token: ${{ secrets.MODRINTH_TOKEN }}
-          project-id: "lDi9Keu1"
-          file: "TrackPlacement.zip"
-          version-name: "TrackPlacement ${{ github.event.inputs.version_override || github.event.release.tag_name }}"
-          version-number: "${{ github.event.inputs.version_override || github.event.release.tag_name }}"
-          changelog: "${{ github.event.inputs.changelog_override || github.event.release.body }}"
-          loaders: |
-            bedrock
+          modrinth-id: lDi9Keu1
+          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          
+          files: TrackPlacement.zip
+          version: ${{ github.event.inputs.version_override || github.event.release.tag_name }}
+          version-type: release
+          changelog: ${{ github.event.inputs.changelog_override || github.event.release.body }}
+          
+          loaders: bedrock
           game-versions: |
             1.21
             26.0
