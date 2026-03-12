@@ -13,6 +13,7 @@ on:
         required: false
 
 env:
+  # This stops the Node.js 20 warnings
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -28,21 +29,20 @@ jobs:
           zip -r TrackPlacement.mcpack . -x "*.git*" ".github/*" "README.md" ".gitignore"
           cp TrackPlacement.mcpack TrackPlacement.zip
 
-      # Step 2: Upload to Modrinth
+      # Step 2: Upload to Modrinth (New Action for better Bedrock support)
       - name: Upload to Modrinth
         if: github.event.inputs.version_override != '' || github.event.release.tag_name != ''
         continue-on-error: true
-        uses: Kir-Antipov/mc-publish@v3.3
+        uses: cloudnode-pro/modrinth-publish@v2
         with:
-          modrinth-id: lDi9Keu1
-          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
-          
-          files: TrackPlacement.zip
-          version: ${{ github.event.inputs.version_override || github.event.release.tag_name }}
-          version-type: release
-          changelog: ${{ github.event.inputs.changelog_override || github.event.release.body }}
-          
-          loaders: bedrock
+          token: ${{ secrets.MODRINTH_TOKEN }}
+          project: "lDi9Keu1"
+          files: "TrackPlacement.zip"
+          version: "${{ github.event.inputs.version_override || github.event.release.tag_name }}"
+          changelog: "${{ github.event.inputs.changelog_override || github.event.release.body }}"
+          # For Bedrock, we must explicitly state 'bedrock'
+          loaders: |
+            bedrock
           game-versions: |
             1.21
             26.0
