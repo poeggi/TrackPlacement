@@ -28,4 +28,4 @@ jobs:
           display_name: "TrackPlacement ${{ github.event.release.tag_name }}"
           release_type: "release"
           # Adjust these versions to match the latest Bedrock updates
-          game_versions: "1.21.0,1.21.1"
+          game_versions: "1.21,26.0,26.3"
