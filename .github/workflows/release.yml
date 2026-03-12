@@ -36,4 +36,4 @@ jobs:
           file_path: "TrackPlacement.mcpack"
           display_name: "TrackPlacement ${{ github.event.inputs.version_override || github.event.release.tag_name }}"
           release_type: "release"
-          game_versions: "1.21"
+          game_versions: "1.21,26.0,26.3"
