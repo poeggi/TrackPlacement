@@ -42,7 +42,7 @@ jobs:
           changelog: "${{ github.event.inputs.changelog_override || github.event.release.body }}"
           # For Bedrock, we must explicitly state 'bedrock'
           loaders: |
-            bedrock
+            minecraft
           game-versions: |
             1.21
             26.0
