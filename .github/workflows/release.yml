@@ -3,6 +3,7 @@ name: CI/CD - TrackPlacement Release
 on:
   release:
     types: [published]
+  workflow_dispatch: # Allows you to run this manually for old releases if needed
 
 jobs:
   upload:
@@ -11,21 +12,47 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 1: Create the .mcpack
-      # We use -j to 'junk' the paths so the files stay at the root of the zip
-      - name: Create MCPack
+      # Step 1: Create the distribution files
+      - name: Create Release Archives
         run: |
+          # Create the .mcpack for CurseForge
           zip -r TrackPlacement.mcpack . -x "*.git*" ".github/*" "README.md" ".gitignore"
+          # Create the .zip for Modrinth
+          cp TrackPlacement.mcpack TrackPlacement.zip
 
       # Step 2: Upload to CurseForge
       - name: Upload to CurseForge
+        continue-on-error: true
         uses: itsmeow/curseforge-upload@v3
         with:
-          token: ${{ secrets.CURSEFORGE_TOKEN }} # Reference the secret name here, NOT the raw key
+          token: ${{ secrets.CURSEFORGE_TOKEN }}
           project_id: "1483473"
           game_endpoint: "minecraft-bedrock"
           file_path: "TrackPlacement.mcpack"
           display_name: "TrackPlacement ${{ github.event.release.tag_name }}"
           release_type: "release"
-          # Adjust these versions to match the latest Bedrock updates
+          # Standard Bedrock versions + your 26.x targets
           game_versions: "1.21,26.0,26.3"
+
+      # Step 3: Upload to Modrinth
+      - name: Upload to Modrinth
+        continue-on-error: true
+        uses: Kir-Antipov/mc-publish@v3
+        with:
+          modrinth-id: lDi9Keu1
+          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
+          
+          # Uploading as a ZIP per your request
+          files: TrackPlacement.zip
+          version: ${{ github.event.release.tag_name }}
+          version-type: release
+          
+          # Automatically pulls your GitHub Release notes as the changelog
+          changelog: ${{ github.event.release.body }}
+          
+          loaders: bedrock
+          # Modrinth version format for the same targets
+          game-versions: |
+            1.21
+            26.0
+            26.3
