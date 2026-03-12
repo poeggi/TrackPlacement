@@ -11,30 +11,19 @@ on:
         description: 'Manual Changelog (Optional)'
         required: false
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   upload:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
-      - name: Create Release Archives
+      - name: Create Release Archive
         run: |
           zip -r TrackPlacement.mcpack . -x "*.git*" -x "./.github/*" -x "./README.md" -x "./.gitignore"
-          cp TrackPlacement.mcpack TrackPlacement.zip
-
-      - name: Upload to Modrinth
-        if: github.event_name == 'release' || github.event.inputs.version_override != ''
-        continue-on-error: true
-        uses: cloudnode-pro/modrinth-publish@v2
-        with:
-          token: ${{ secrets.MODRINTH_TOKEN }}
-          project: "lDi9Keu1"
-          files: "TrackPlacement.zip"
-          version: "${{ github.event.inputs.version_override || github.event.release.tag_name }}"
-          changelog: "${{ github.event.inputs.changelog_override || github.event.release.body }}"
-          loaders: '["minecraft"]'
-          game-versions: '["1.21"]'
 
       - name: Upload to CurseForge
         if: github.event_name == 'release' || github.event.inputs.version_override != ''
