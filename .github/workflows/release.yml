@@ -3,7 +3,18 @@ name: CI/CD - TrackPlacement Release
 on:
   release:
     types: [published]
-  workflow_dispatch: # Allows you to run this manually for old releases if needed
+  workflow_dispatch:
+    inputs:
+      version_override:
+        description: 'Version Tag (e.g. v1.0.0)'
+        required: false
+      changelog_override:
+        description: 'Manual Changelog'
+        required: false
+
+env:
+  # This silences the Node.js 20 deprecation warning
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
   upload:
@@ -12,38 +23,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # Step 1: Create the distribution files
       - name: Create Release Archives
         run: |
-          # Create the .mcpack for CurseForge
           zip -r TrackPlacement.mcpack . -x "*.git*" ".github/*" "README.md" ".gitignore"
-          # Create the .zip for Modrinth
           cp TrackPlacement.mcpack TrackPlacement.zip
 
-      # Step 2: Upload to Modrinth
-      - name: Upload to Modrinth
-        continue-on-error: true
-        uses: Kir-Antipov/mc-publish@v3
-        with:
-          modrinth-id: lDi9Keu1
-          modrinth-token: ${{ secrets.MODRINTH_TOKEN }}
-          
-          # Uploading as a ZIP per your request
-          files: TrackPlacement.zip
-          version: ${{ github.event.release.tag_name }}
-          version-type: release
-          
-          # Automatically pulls your GitHub Release notes as the changelog
-          changelog: ${{ github.event.release.body }}
-          
-          loaders: bedrock
-          # Modrinth version format for the same targets
-          game-versions: |
-            1.21
-            26.0
-            26.3
-
-      # Step 3: Upload to CurseForge
       - name: Upload to CurseForge
         continue-on-error: true
         uses: itsmeow/curseforge-upload@v3
@@ -52,7 +36,24 @@ jobs:
           project_id: "1483473"
           game_endpoint: "minecraft-bedrock"
           file_path: "TrackPlacement.mcpack"
-          display_name: "TrackPlacement ${{ github.event.release.tag_name }}"
+          display_name: "TrackPlacement ${{ github.event.inputs.version_override || github.event.release.tag_name }}"
           release_type: "release"
-          # Standard Bedrock versions + your 26.x targets
           game_versions: "1.21,26.0,26.3"
+
+      # UPDATED: Using the official Modrinth Action (Minotaur)
+      - name: Upload to Modrinth
+        continue-on-error: true
+        uses: modrinth/minotaur@v2
+        with:
+          token: ${{ secrets.MODRINTH_TOKEN }}
+          project-id: "lDi9Keu1"
+          file: "TrackPlacement.zip"
+          version-name: "TrackPlacement ${{ github.event.inputs.version_override || github.event.release.tag_name }}"
+          version-number: "${{ github.event.inputs.version_override || github.event.release.tag_name }}"
+          changelog: "${{ github.event.inputs.changelog_override || github.event.release.body }}"
+          loaders: |
+            bedrock
+          game-versions: |
+            1.21
+            26.0
+            26.3
