@@ -20,21 +20,7 @@ jobs:
           # Create the .zip for Modrinth
           cp TrackPlacement.mcpack TrackPlacement.zip
 
-      # Step 2: Upload to CurseForge
-      - name: Upload to CurseForge
-        continue-on-error: true
-        uses: itsmeow/curseforge-upload@v3
-        with:
-          token: ${{ secrets.CURSEFORGE_TOKEN }}
-          project_id: "1483473"
-          game_endpoint: "minecraft-bedrock"
-          file_path: "TrackPlacement.mcpack"
-          display_name: "TrackPlacement ${{ github.event.release.tag_name }}"
-          release_type: "release"
-          # Standard Bedrock versions + your 26.x targets
-          game_versions: "1.21,26.0,26.3"
-
-      # Step 3: Upload to Modrinth
+      # Step 2: Upload to Modrinth
       - name: Upload to Modrinth
         continue-on-error: true
         uses: Kir-Antipov/mc-publish@v3
@@ -56,3 +42,17 @@ jobs:
             1.21
             26.0
             26.3
+
+      # Step 3: Upload to CurseForge
+      - name: Upload to CurseForge
+        continue-on-error: true
+        uses: itsmeow/curseforge-upload@v3
+        with:
+          token: ${{ secrets.CURSEFORGE_TOKEN }}
+          project_id: "1483473"
+          game_endpoint: "minecraft-bedrock"
+          file_path: "TrackPlacement.mcpack"
+          display_name: "TrackPlacement ${{ github.event.release.tag_name }}"
+          release_type: "release"
+          # Standard Bedrock versions + your 26.x targets
+          game_versions: "1.21,26.0,26.3"
