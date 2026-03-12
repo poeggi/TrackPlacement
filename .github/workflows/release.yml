@@ -1,0 +1,31 @@
+name: CI/CD - TrackPlacement Release
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Step 1: Create the .mcpack
+      # We use -j to 'junk' the paths so the files stay at the root of the zip
+      - name: Create MCPack
+        run: |
+          zip -r TrackPlacement.mcpack . -x "*.git*" ".github/*" "README.md" ".gitignore"
+
+      # Step 2: Upload to CurseForge
+      - name: Upload to CurseForge
+        uses: itsmeow/curseforge-upload@v3
+        with:
+          token: ${{ secrets.CURSEFORGE_TOKEN }} # Reference the secret name here, NOT the raw key
+          project_id: "1483473"
+          game_endpoint: "minecraft-bedrock"
+          file_path: "TrackPlacement.mcpack"
+          display_name: "TrackPlacement ${{ github.event.release.tag_name }}"
+          release_type: "release"
+          # Adjust these versions to match the latest Bedrock updates
+          game_versions: "1.21.0,1.21.1"
