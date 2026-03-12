@@ -6,14 +6,14 @@ on:
   workflow_dispatch:
     inputs:
       version_override:
-        description: 'Version Tag (e.g. v1.0.0)'
+        description: 'Version Number (e.g., 1.21.0)'
         required: false
       changelog_override:
-        description: 'Manual Changelog'
+        description: 'Manual Changelog (Optional)'
         required: false
 
 env:
-  # This silences the Node.js 20 deprecation warning
+  # Opt-in to Node 24 to silence deprecation warnings in 2026
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -23,27 +23,19 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      # Step 1: Create the distribution files
       - name: Create Release Archives
         run: |
+          # Create the .mcpack for CurseForge
           zip -r TrackPlacement.mcpack . -x "*.git*" ".github/*" "README.md" ".gitignore"
+          # Create the .zip for Modrinth
           cp TrackPlacement.mcpack TrackPlacement.zip
 
-      - name: Upload to CurseForge
-        continue-on-error: true
-        uses: itsmeow/curseforge-upload@v3
-        with:
-          token: ${{ secrets.CURSEFORGE_TOKEN }}
-          project_id: "1483473"
-          game_endpoint: "minecraft-bedrock"
-          file_path: "TrackPlacement.mcpack"
-          display_name: "TrackPlacement ${{ github.event.inputs.version_override || github.event.release.tag_name }}"
-          release_type: "release"
-          game_versions: "1.21,26.0,26.3"
-
-      # UPDATED: Using the official Modrinth Action (Minotaur)
+      # Step 2: Upload to Modrinth (Official Action)
       - name: Upload to Modrinth
+        if: github.event.inputs.version_override != '' || github.event.release.tag_name != ''
         continue-on-error: true
-        uses: modrinth/minotaur@v2
+        uses: modrinth/minotaur@v2.9.0
         with:
           token: ${{ secrets.MODRINTH_TOKEN }}
           project-id: "lDi9Keu1"
@@ -57,3 +49,17 @@ jobs:
             1.21
             26.0
             26.3
+
+      # Step 3: Upload to CurseForge
+      - name: Upload to CurseForge
+        if: github.event.inputs.version_override != '' || github.event.release.tag_name != ''
+        continue-on-error: true
+        uses: itsmeow/curseforge-upload@v3
+        with:
+          token: ${{ secrets.CURSEFORGE_TOKEN }}
+          project_id: "1483473"
+          game_endpoint: "minecraft-bedrock"
+          file_path: "TrackPlacement.mcpack"
+          display_name: "TrackPlacement ${{ github.event.inputs.version_override || github.event.release.tag_name }}"
+          release_type: "release"
+          game_versions: "1.21,26.0,26.3"
