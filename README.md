@@ -18,8 +18,9 @@ A server-side Bedrock Dedicated Server (BDS) behavior pack that monitors placeme
 ## Requirements
 
 - Minecraft Bedrock Dedicated Server 1.21.0 or later
-- `@minecraft/server` API version 2.1.0 (stable, no experiments required for core tracking)
+- `@minecraft/server` API version 2.1.0 (stable, no experiments required for core log-based tracking)
 - NOTE: Beta APIs experiment enabled on the world **only if** you want operator chat commands
+- NOTE: Beta APIs will invalidate world achievements - only use if you know what you are doing
 
 ## Installation
 
