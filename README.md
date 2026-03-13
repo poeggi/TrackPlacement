@@ -9,11 +9,11 @@ A server-side Bedrock Dedicated Server (BDS) behavior pack that monitors placeme
 - Tracks items held when interacting with entities (TNT minecarts)
 - Tracks items acquired via crafting or pickup
 - Detects entities fired from dispensers/droppers
-- Dimension-aware tracking — e.g. beds can be restricted to Nether/The End only
-- Rate-limiting with configurable windows — bursts are summarised rather than spammed
+- Dimension-aware tracking - e.g. beds can be restricted to Nether/The End only
+- Rate-limiting with configurable windows - bursts are summarised rather than spammed
 - Nearby events are clustered by location to reduce noise
 - All events logged to console regardless of in-game alert settings
-- Operator commands available when ONLY Beta APIs are enabled on the world
+- Operator commands available when Beta APIs are enabled on the world
 
 ## Requirements
 
@@ -45,8 +45,8 @@ A server-side Bedrock Dedicated Server (BDS) behavior pack that monitors placeme
 TrackPlacement_BP/
 ├── manifest.json
 └── scripts/
-    ├── main.js              — core tracking logic and operator commands
-    └── tracked_blocks.js    — **configuration**: what to track and how to notify
+    ├── main.js              - core tracking logic and operator commands
+    └── tracked_blocks.js    - **configuration**: what to track and how to notify
 ```
 
 ## Configuration
@@ -88,16 +88,20 @@ Beds are harmless in the Overworld but explode instantly in the Nether and The E
 | Type | Trigger |
 |---|---|
 | `PLACE` | Tracked block placed directly in the world |
-| `CONTAINER` | Player opens a dispenser, dropper, or hopper while holding a tracked item |
+| `HOP_LOAD` | Player loads a tracked item into a hopper |
+| `DROP_LOAD` | Player loads a tracked item into a dropper |
+| `DISP_LOAD` | Player loads a tracked item into a dispenser |
 | `ENTITY` | Player interacts with a tracked entity while holding a tracked item |
-| `CRAFT/PICKUP` | Tracked item added to a player's inventory |
-| `DISPENSER` | Tracked entity spawned adjacent to a dispenser or dropper |
+| `PICKUP` | Tracked item added to a player's inventory via craft or pickup |
+| `DISP_FIRE` | Tracked entity spawned adjacent to a dispenser or dropper |
 
 ## Console log format
 
 ```
 [TrackPlacement] [PLACE] PiCraft3 | TNT (tnt) | (-240, 136, 74) | Overworld | #1
 [TrackPlacement] [PLACE x3 +more] PiCraft3 | TNT (tnt) | near (-240, 136, 74) (x3) | Overworld | #4
+[TrackPlacement] [DISP_LOAD] PiCraft3 | TNT (tnt) | (-240, 136, 74) | Overworld | #5
+[TrackPlacement] [DISP_FIRE] _dispenser | TNT (tnt) | (-240, 136, 74) | Overworld | #6
 ```
 
 ## Operator commands
@@ -111,15 +115,15 @@ Chat commands require **Beta APIs** to be enabled on the world. When enabled, ty
 | `track ignore remove <player>` | Remove a player's ignore |
 | `track ignore list` | List all currently ignored players, including who set them and when |
 | `track offenders [count]` | Show last N tracked events (default: 3). Includes ignored players, marked accordingly |
-| `track announce [player]` | Broadcast what is tracked — to all players by default, or privately to one |
+| `track announce [player]` | Broadcast what is tracked - to all players by default, or privately to one |
 
-Commands are silently cancelled from chat — other players will not see them.
+Commands are silently cancelled from chat - other players will not see them.
 
 ### Enabling Beta APIs
 
-**Option A — In-game:** Open world settings → Experiments → enable Beta APIs, then restart.
+**Option A - In-game:** Open world settings -> Experiments -> enable Beta APIs, then restart.
 
-**Option B — level.dat:** Set `experiments.gametest = 1` in the world's `level.dat` file.
+**Option B - level.dat:** Set `experiments.gametest = 1` in the world's `level.dat` file.
 
 Without Beta APIs, all tracking and alerts continue to work normally. Only the operator chat commands are unavailable.
 
