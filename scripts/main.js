@@ -1,7 +1,7 @@
 import { world, system } from "@minecraft/server";
 
 // --------------------------------------------------------------------------
-// TrackPlacement — Bedrock Dedicated Server behavior pack
+// TrackPlacement - Bedrock Dedicated Server behavior pack
 // UUID: 560fee0a-73c1-4f03-9c27-3ae8ba58344a
 //
 // Operator commands require Beta APIs to be enabled on the world.
@@ -15,31 +15,56 @@ import { world, system } from "@minecraft/server";
 //   track announce [player]
 //
 // To enable Beta APIs (required for chat commands):
-//   Option A — In-game: world settings -> Experiments -> Beta APIs -> ON
-//   Option B — level.dat: set experiments.gametest = 1
+//   Option A - In-game: world settings -> Experiments -> Beta APIs -> ON
+//   Option B - level.dat: set experiments.gametest = 1
 //
 // Without Beta APIs, tracking and alerts still work fully.
 // Only the operator chat commands are unavailable.
+//
+// Alert tags:
+//   [PLACE]      - tracked block placed directly in world
+//   [PICKUP]     - tracked item acquired via craft or pickup
+//   [ENTITY]     - tracked item held when interacting with entity
+//   [HOP_LOAD]   - tracked item placed into hopper by player
+//   [DROP_LOAD]  - tracked item placed into dropper by player
+//   [DISP_LOAD]  - tracked item placed into dispenser by player
+//   [DISP_FIRE]  - tracked entity spawned from dispenser or dropper
 // --------------------------------------------------------------------------
 
 const FALLBACK_BLOCKS      = [{ id: "minecraft:tnt", label: "TNT", alert_color: "\u00a7c" }];
 const DEFAULT_WINDOW_TICKS = 200;
 const CLUSTER_RADIUS       = 8;
 const DISPENSER_ACTOR      = "_dispenser";
+const SESSION_MAX_TICKS    = 12000; // 10 minutes
+const SESSION_SNAP_TICKS   = 20;   // snapshot interval - 1 second
+const SESSION_CLOSE_DIST   = 6;    // blocks - player walked away
 
-let blockMap          = null;
-let itemMap           = null;
-let containerSet      = null;
-let entitySet         = null;
-let dispenserEntities = null;
-let chatAlertsEnabled = true;
-let chatCommandsActive = false;  // set to true if Beta APIs detected at startup
+// Container typeId -> alert tag
+const CONTAINER_TAGS = {
+    "minecraft:hopper":    "HOP_LOAD",
+    "minecraft:dropper":   "DROP_LOAD",
+    "minecraft:dispenser": "DISP_LOAD",
+};
+
+let blockMap           = null;
+let itemMap            = null;
+let containerSet       = null;
+let entitySet          = null;
+let dispenserEntities  = null;
+let chatAlertsEnabled  = true;
+let chatCommandsActive = false;
 
 // eventLog entries: {type, actor, id, label, coords, dimId, wasIgnored}
 const eventLog       = [];
 // ignoredPlayers map: player name -> {by, time}
 const ignoredPlayers = new Map();
 const windows        = {};
+
+// containerSessions: playerName -> {
+//   blockTypeId, blockPos, dimId,
+//   intervalId, timeoutId
+// }
+const containerSessions = new Map();
 
 // --------------------------------------------------------------------------
 // Config
@@ -60,7 +85,7 @@ async function loadConfig() {
         entitySet         = new Set((cfg.tracked_entity_interactions ?? []).map(e => e.id));
         dispenserEntities = new Set((cfg.dispenser_entities ?? []).map(e => e.id));
         chatAlertsEnabled = cfg.chat_alerts !== false;
-        console.log("[TrackPlacement] Config loaded — blocks: " + blockMap.size + ", items: " + itemMap.size + ", containers: " + containerSet.size + ", entities: " + entitySet.size + ", dispenser entities: " + dispenserEntities.size + ", chat alerts: " + chatAlertsEnabled);
+        console.log("[TrackPlacement] Config loaded - blocks: " + blockMap.size + ", items: " + itemMap.size + ", containers: " + containerSet.size + ", entities: " + entitySet.size + ", dispenser entities: " + dispenserEntities.size + ", chat alerts: " + chatAlertsEnabled);
     } catch (err) {
         console.log("[TrackPlacement] Could not load config (" + err + "), falling back to TNT only.");
         blockMap          = new Map(FALLBACK_BLOCKS.map(e => [e.id, { label: e.label, alert_color: e.alert_color, window_ticks: DEFAULT_WINDOW_TICKS, dimensions: null }]));
@@ -182,6 +207,8 @@ function broadcastAlert(type, actor, label, itemId, clusters, dimId, color, tota
 
 // Always record to eventLog. Ignored players are logged with wasIgnored=true
 // but do not trigger console output or chat alerts.
+// Always record to eventLog. Ignored players are logged with wasIgnored=true
+// but do not trigger console output or chat alerts.
 function fireAlert(type, actor, label, itemId, coords, dimId, color, windowTicks) {
     const isIgnored = ignoredPlayers.has(actor);
     const total     = countPreviousEvents(actor, type, itemId);
@@ -209,7 +236,102 @@ function fireAlert(type, actor, label, itemId, coords, dimId, color, windowTicks
 }
 
 function fireDispenserAlert(label, itemId, coords, dimId, color, windowTicks) {
-    fireAlert("DISPENSER", DISPENSER_ACTOR, label, itemId, coords, dimId, color, windowTicks);
+    fireAlert("DISP_FIRE", DISPENSER_ACTOR, label, itemId, coords, dimId, color, windowTicks);
+}
+
+// --------------------------------------------------------------------------
+// Container session - snapshot-based detection
+//
+// When a player opens a tracked container:
+//   1. Snapshot the container inventory immediately.
+//   2. Every SESSION_SNAP_TICKS (1s), snapshot again and diff.
+//      Fire an alert for any tracked item that appeared since last snap.
+//   3. Each interval, check if the player has moved > SESSION_CLOSE_DIST
+//      blocks from the container. If so, end the session.
+//   4. Hard cap at SESSION_MAX_TICKS (10 minutes).
+//   5. Also ended on playerLeave.
+// --------------------------------------------------------------------------
+
+function snapshotInventory(block) {
+    const snap = new Map();
+    try {
+        const inv = block.getComponent("inventory");
+        if (!inv || !inv.container) return snap;
+        const container = inv.container;
+        for (let i = 0; i < container.size; i++) {
+            const item = container.getItem(i);
+            if (!item) continue;
+            snap.set(item.typeId, (snap.get(item.typeId) ?? 0) + item.amount);
+        }
+    } catch { /* block may have been removed */ }
+    return snap;
+}
+
+function diffSnapshots(before, after) {
+    const added = new Map();
+    for (const [typeId, countAfter] of after) {
+        const countBefore = before.get(typeId) ?? 0;
+        if (countAfter > countBefore) added.set(typeId, countAfter - countBefore);
+    }
+    return added;
+}
+
+function endContainerSession(playerName) {
+    const session = containerSessions.get(playerName);
+    if (!session) return;
+    system.clearRun(session.intervalId);
+    system.clearRun(session.timeoutId);
+    containerSessions.delete(playerName);
+}
+
+function startContainerSession(player, block, dimension) {
+    endContainerSession(player.name);
+    const blockPos    = { x: block.location.x, y: block.location.y, z: block.location.z };
+    const blockTypeId = block.typeId;
+    const dimId       = dimension.id;
+    const alertTag    = CONTAINER_TAGS[blockTypeId] ?? "CONT_LOAD";
+    const coordStr    = formatCoords(blockPos);
+    let lastSnap      = snapshotInventory(block);
+    const intervalId  = system.runInterval(() => {
+        const session = containerSessions.get(player.name);
+        if (!session) return;
+        try {
+            const playerPos = player.location;
+            if (player.dimension.id !== dimId || dist3d(playerPos, blockPos) > SESSION_CLOSE_DIST) {
+                endContainerSession(player.name);
+                return;
+            }
+        } catch {
+            endContainerSession(player.name);
+            return;
+        }
+        let currentSnap;
+        try {
+            const liveBlock = dimension.getBlock(blockPos);
+            if (!liveBlock || liveBlock.typeId !== blockTypeId) {
+                endContainerSession(player.name);
+                return;
+            }
+            currentSnap = snapshotInventory(liveBlock);
+        } catch {
+            endContainerSession(player.name);
+            return;
+        }
+        const added = diffSnapshots(lastSnap, currentSnap);
+        lastSnap = currentSnap;
+        for (const [typeId, countAdded] of added) {
+            if (!itemMap.has(typeId)) continue;
+            const meta = itemMap.get(typeId);
+            if (!inAllowedDimension(meta, dimId)) continue;
+            for (let i = 0; i < countAdded; i++) {
+                fireAlert(alertTag, player.name, meta.label, typeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
+            }
+        }
+    }, SESSION_SNAP_TICKS);
+    const timeoutId = system.runTimeout(() => {
+        endContainerSession(player.name);
+    }, SESSION_MAX_TICKS);
+    containerSessions.set(player.name, { blockTypeId, blockPos, dimId, intervalId, timeoutId });
 }
 
 // --------------------------------------------------------------------------
@@ -317,6 +439,8 @@ function handleCommand(sender, message) {
 
 // Attempt to register chat commands using beforeEvents.chatSend (Beta APIs only).
 // If the API is unavailable, logs a notice and leaves commands inactive.
+// Attempt to register chat commands using beforeEvents.chatSend (Beta APIs only).
+// If the API is unavailable, logs a notice and leaves commands inactive.
 function tryRegisterChatCommands() {
     try {
         if (!world.beforeEvents || typeof world.beforeEvents.chatSend?.subscribe !== "function") {
@@ -330,10 +454,10 @@ function tryRegisterChatCommands() {
             system.run(() => handleCommand(sender, message));
         });
         chatCommandsActive = true;
-        console.log("[TrackPlacement] Beta APIs detected — chat commands active. Type 'track help' in chat.");
+        console.log("[TrackPlacement] Beta APIs detected - chat commands active. Type 'track help' in chat.");
     } catch (e) {
         chatCommandsActive = false;
-        console.log("[TrackPlacement] Beta APIs not enabled — chat commands inactive. Enable Beta APIs on this world to use operator commands.");
+        console.log("[TrackPlacement] Beta APIs not enabled - chat commands inactive. Enable Beta APIs on this world to use operator commands.");
     }
 }
 
@@ -342,6 +466,7 @@ function tryRegisterChatCommands() {
 // --------------------------------------------------------------------------
 
 function registerListeners() {
+    // Block placements
     world.afterEvents.playerPlaceBlock.subscribe((event) => {
         const { block, player, dimension } = event;
         if (!blockMap.has(block.typeId)) return;
@@ -349,44 +474,56 @@ function registerListeners() {
         if (!inAllowedDimension(meta, dimension.id)) return;
         fireAlert("PLACE", player.name, meta.label, block.typeId, formatCoords(block.location), dimension.id, meta.alert_color, meta.window_ticks);
     });
+    // Container sessions - player opens a tracked container
     world.afterEvents.playerInteractWithBlock.subscribe((event) => {
-        const { block, player, itemStack, dimension } = event;
-        if (!itemStack || !containerSet.has(block.typeId) || !itemMap.has(itemStack.typeId)) return;
-        const meta = itemMap.get(itemStack.typeId);
-        if (!inAllowedDimension(meta, dimension.id)) return;
-        fireAlert("CONTAINER", player.name, meta.label + " -> " + stripNamespace(block.typeId), itemStack.typeId, formatCoords(block.location), dimension.id, meta.alert_color, meta.window_ticks);
+        const { block, player } = event;
+        const dimension = event.dimension ?? player?.dimension;
+        if (!block || !dimension || !containerSet.has(block.typeId)) return;
+        startContainerSession(player, block, dimension);
     });
+    // Entity interactions - tracked item held while interacting
     world.afterEvents.playerInteractWithEntity.subscribe((event) => {
-        const { target, player, itemStack, dimension } = event;
-        if (!itemStack || !entitySet.has(target.typeId) || !itemMap.has(itemStack.typeId)) return;
+        const { target, player, itemStack } = event;
+        const dimension = event.dimension ?? player?.dimension;
+        if (!itemStack || !target || !dimension || !entitySet.has(target.typeId) || !itemMap.has(itemStack.typeId)) return;
         const meta = itemMap.get(itemStack.typeId);
         if (!inAllowedDimension(meta, dimension.id)) return;
         fireAlert("ENTITY", player.name, meta.label, itemStack.typeId, formatCoords(target.location), dimension.id, meta.alert_color, meta.window_ticks);
     });
+    // Craft / pickup
     world.afterEvents.playerInventoryItemChange.subscribe((event) => {
         const { player, itemStack, changeType } = event;
         if (changeType !== "added" || !itemStack || !itemMap.has(itemStack.typeId)) return;
         const meta = itemMap.get(itemStack.typeId);
         if (!inAllowedDimension(meta, player.dimension.id)) return;
-        fireAlert("CRAFT/PICKUP", player.name, meta.label, itemStack.typeId, formatCoords(player.location), player.dimension.id, meta.alert_color, meta.window_ticks);
+        fireAlert("PICKUP", player.name, meta.label, itemStack.typeId, formatCoords(player.location), player.dimension.id, meta.alert_color, meta.window_ticks);
     });
+    // Dispenser / dropper fires tracked entity
     world.afterEvents.entitySpawn.subscribe((event) => {
         const entity = event.entity;
-        if (!dispenserEntities.has(entity.typeId)) return;
-        const loc    = entity.location;
+        if (!entity || !entity.typeId || !dispenserEntities.has(entity.typeId)) return;
+        const spawnX = Math.floor(entity.location.x);
+        const spawnY = Math.floor(entity.location.y);
+        const spawnZ = Math.floor(entity.location.z);
         const dim    = entity.dimension;
-        const nearby = [{x:1,y:0,z:0},{x:-1,y:0,z:0},{x:0,y:0,z:1},{x:0,y:0,z:-1},{x:0,y:1,z:0},{x:0,y:-1,z:0}];
-        const fromDispenser = nearby.some(offset => {
+        const dimId  = dim.id;
+        const offsets = [{x:1,y:0,z:0},{x:-1,y:0,z:0},{x:0,y:0,z:1},{x:0,y:0,z:-1},{x:0,y:1,z:0},{x:0,y:-1,z:0}];
+        const fromDispenser = offsets.some(o => {
             try {
-                const b = dim.getBlock({ x: Math.floor(loc.x) + offset.x, y: Math.floor(loc.y) + offset.y, z: Math.floor(loc.z) + offset.z });
+                const b = dim.getBlock({ x: spawnX + o.x, y: spawnY + o.y, z: spawnZ + o.z });
                 return b && (b.typeId === "minecraft:dispenser" || b.typeId === "minecraft:dropper");
             } catch { return false; }
         });
         if (!fromDispenser) return;
-        const meta = itemMap.has(entity.typeId)
+        const coordStr = "(" + spawnX + ", " + spawnY + ", " + spawnZ + ")";
+        const meta     = itemMap.has(entity.typeId)
             ? itemMap.get(entity.typeId)
             : { label: stripNamespace(entity.typeId), alert_color: "\u00a76", window_ticks: DEFAULT_WINDOW_TICKS, dimensions: null };
-        fireDispenserAlert(meta.label, entity.typeId, formatCoords(loc), dim.id, meta.alert_color, meta.window_ticks);
+        fireDispenserAlert(meta.label, entity.typeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
+    });
+    // Clean up container sessions on player disconnect
+    world.afterEvents.playerLeave.subscribe((event) => {
+        endContainerSession(event.playerName);
     });
     tryRegisterChatCommands();
 }
