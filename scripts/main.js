@@ -207,8 +207,6 @@ function broadcastAlert(type, actor, label, itemId, clusters, dimId, color, tota
 
 // Always record to eventLog. Ignored players are logged with wasIgnored=true
 // but do not trigger console output or chat alerts.
-// Always record to eventLog. Ignored players are logged with wasIgnored=true
-// but do not trigger console output or chat alerts.
 function fireAlert(type, actor, label, itemId, coords, dimId, color, windowTicks) {
     const isIgnored = ignoredPlayers.has(actor);
     const total     = countPreviousEvents(actor, type, itemId);
@@ -295,6 +293,10 @@ function startContainerSession(player, block, dimension) {
     const intervalId  = system.runInterval(() => {
         const session = containerSessions.get(player.name);
         if (!session) return;
+        if (!player.isValid()) {
+            endContainerSession(player.name);
+            return;
+        }
         try {
             const playerPos = player.location;
             if (player.dimension.id !== dimId || dist3d(playerPos, blockPos) > SESSION_CLOSE_DIST) {
@@ -424,7 +426,7 @@ function handleCommand(sender, message) {
         return;
     }
     const sub = parts[1];
-    if (sub === "help") {
+    if (!sub || sub === "help") {
         cmdHelp(sender);
     } else if (sub === "ignore") {
         cmdIgnore(sender, parts[2], parts[3]);
@@ -437,8 +439,6 @@ function handleCommand(sender, message) {
     }
 }
 
-// Attempt to register chat commands using beforeEvents.chatSend (Beta APIs only).
-// If the API is unavailable, logs a notice and leaves commands inactive.
 // Attempt to register chat commands using beforeEvents.chatSend (Beta APIs only).
 // If the API is unavailable, logs a notice and leaves commands inactive.
 function tryRegisterChatCommands() {
@@ -502,12 +502,24 @@ function registerListeners() {
     world.afterEvents.entitySpawn.subscribe((event) => {
         const entity = event.entity;
         if (!entity || !entity.typeId || !dispenserEntities.has(entity.typeId)) return;
-        const spawnX = Math.floor(entity.location.x);
-        const spawnY = Math.floor(entity.location.y);
-        const spawnZ = Math.floor(entity.location.z);
-        const dim    = entity.dimension;
-        const dimId  = dim.id;
+        const typeId = entity.typeId;
+        const meta   = itemMap.has(typeId)
+            ? itemMap.get(typeId)
+            : { label: stripNamespace(typeId), alert_color: "\u00a76", window_ticks: DEFAULT_WINDOW_TICKS, dimensions: null };
+        let spawnX, spawnY, spawnZ, dimId;
+        try {
+            spawnX = Math.floor(entity.location.x);
+            spawnY = Math.floor(entity.location.y);
+            spawnZ = Math.floor(entity.location.z);
+            dimId  = entity.dimension.id;
+        } catch {
+            // Entity invalidated before location could be read - fire alert without coordinates
+            fireDispenserAlert(meta.label, typeId, "(unknown)", "unknown", meta.alert_color, meta.window_ticks);
+            return;
+        }
+        const coordStr = "(" + spawnX + ", " + spawnY + ", " + spawnZ + ")";
         const offsets = [{x:1,y:0,z:0},{x:-1,y:0,z:0},{x:0,y:0,z:1},{x:0,y:0,z:-1},{x:0,y:1,z:0},{x:0,y:-1,z:0}];
+        const dim = entity.dimension;
         const fromDispenser = offsets.some(o => {
             try {
                 const b = dim.getBlock({ x: spawnX + o.x, y: spawnY + o.y, z: spawnZ + o.z });
@@ -515,11 +527,7 @@ function registerListeners() {
             } catch { return false; }
         });
         if (!fromDispenser) return;
-        const coordStr = "(" + spawnX + ", " + spawnY + ", " + spawnZ + ")";
-        const meta     = itemMap.has(entity.typeId)
-            ? itemMap.get(entity.typeId)
-            : { label: stripNamespace(entity.typeId), alert_color: "\u00a76", window_ticks: DEFAULT_WINDOW_TICKS, dimensions: null };
-        fireDispenserAlert(meta.label, entity.typeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
+        fireDispenserAlert(meta.label, typeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
     });
     // Clean up container sessions on player disconnect
     world.afterEvents.playerLeave.subscribe((event) => {
