@@ -293,10 +293,6 @@ function startContainerSession(player, block, dimension) {
     const intervalId  = system.runInterval(() => {
         const session = containerSessions.get(player.name);
         if (!session) return;
-        if (!player.isValid()) {
-            endContainerSession(player.name);
-            return;
-        }
         try {
             const playerPos = player.location;
             if (player.dimension.id !== dimId || dist3d(playerPos, blockPos) > SESSION_CLOSE_DIST) {
@@ -468,11 +464,15 @@ function tryRegisterChatCommands() {
 function registerListeners() {
     // Block placements
     world.afterEvents.playerPlaceBlock.subscribe((event) => {
-        const { block, player, dimension } = event;
-        if (!blockMap.has(block.typeId)) return;
-        const meta = blockMap.get(block.typeId);
-        if (!inAllowedDimension(meta, dimension.id)) return;
-        fireAlert("PLACE", player.name, meta.label, block.typeId, formatCoords(block.location), dimension.id, meta.alert_color, meta.window_ticks);
+        let blockTypeId, playerName, dimId, coordStr;
+        try { blockTypeId = event.block.typeId;                } catch { return; } // can't identify item - nothing to alert
+        if (!blockMap.has(blockTypeId)) return;
+        const meta = blockMap.get(blockTypeId);
+        try { playerName = event.player.name;                  } catch { playerName = "(unknown)"; }
+        try { dimId      = event.dimension.id;                 } catch { dimId      = "unknown"; }
+        try { coordStr   = formatCoords(event.block.location); } catch { coordStr   = "(unknown)"; }
+        if (dimId !== "unknown" && !inAllowedDimension(meta, dimId)) return;
+        fireAlert("PLACE", playerName, meta.label, blockTypeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
     });
     // Container sessions - player opens a tracked container
     world.afterEvents.playerInteractWithBlock.subscribe((event) => {
@@ -483,20 +483,29 @@ function registerListeners() {
     });
     // Entity interactions - tracked item held while interacting
     world.afterEvents.playerInteractWithEntity.subscribe((event) => {
-        const { target, player, itemStack } = event;
-        const dimension = event.dimension ?? player?.dimension;
-        if (!itemStack || !target || !dimension || !entitySet.has(target.typeId) || !itemMap.has(itemStack.typeId)) return;
-        const meta = itemMap.get(itemStack.typeId);
-        if (!inAllowedDimension(meta, dimension.id)) return;
-        fireAlert("ENTITY", player.name, meta.label, itemStack.typeId, formatCoords(target.location), dimension.id, meta.alert_color, meta.window_ticks);
+        let playerName, dimId, targetTypeId, itemTypeId, coordStr;
+        try { itemTypeId   = event.itemStack?.typeId;                          } catch { return; } // no item - nothing to alert
+        if (!itemTypeId || !itemMap.has(itemTypeId)) return;
+        try { targetTypeId = event.target.typeId;                              } catch { targetTypeId = "(unknown)"; }
+        try { playerName   = event.player.name;                                } catch { playerName   = "(unknown)"; }
+        try { dimId        = (event.dimension ?? event.player?.dimension)?.id; } catch { dimId        = "unknown"; }
+        try { coordStr     = formatCoords(event.target.location);              } catch { coordStr     = "(unknown)"; }
+        if (targetTypeId !== "(unknown)" && !entitySet.has(targetTypeId)) return;
+        const meta = itemMap.get(itemTypeId);
+        if (dimId !== "unknown" && !inAllowedDimension(meta, dimId)) return;
+        fireAlert("ENTITY", playerName, meta.label, itemTypeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
     });
     // Craft / pickup
     world.afterEvents.playerInventoryItemChange.subscribe((event) => {
         const { player, itemStack, changeType } = event;
         if (changeType !== "added" || !itemStack || !itemMap.has(itemStack.typeId)) return;
         const meta = itemMap.get(itemStack.typeId);
-        if (!inAllowedDimension(meta, player.dimension.id)) return;
-        fireAlert("PICKUP", player.name, meta.label, itemStack.typeId, formatCoords(player.location), player.dimension.id, meta.alert_color, meta.window_ticks);
+        let playerName, dimId, coordStr;
+        try { playerName = player.name;                   } catch { playerName = "(unknown)"; }
+        try { dimId      = player.dimension.id;           } catch { dimId      = "unknown"; }
+        try { coordStr   = formatCoords(player.location); } catch { coordStr   = "(unknown)"; }
+        if (dimId !== "unknown" && !inAllowedDimension(meta, dimId)) return;
+        fireAlert("PICKUP", playerName, meta.label, itemStack.typeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
     });
     // Dispenser / dropper fires tracked entity
     world.afterEvents.entitySpawn.subscribe((event) => {
@@ -519,7 +528,13 @@ function registerListeners() {
         }
         const coordStr = "(" + spawnX + ", " + spawnY + ", " + spawnZ + ")";
         const offsets = [{x:1,y:0,z:0},{x:-1,y:0,z:0},{x:0,y:0,z:1},{x:0,y:0,z:-1},{x:0,y:1,z:0},{x:0,y:-1,z:0}];
-        const dim = entity.dimension;
+        let dim;
+        try { dim = world.getDimension(dimId); } catch { dim = null; }
+        if (!dim) {
+            // Can't verify dispenser source but we know a tracked entity spawned - alert anyway
+            fireDispenserAlert(meta.label, typeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
+            return;
+        }
         const fromDispenser = offsets.some(o => {
             try {
                 const b = dim.getBlock({ x: spawnX + o.x, y: spawnY + o.y, z: spawnZ + o.z });
