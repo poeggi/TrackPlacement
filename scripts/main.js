@@ -4,7 +4,7 @@ import { world, system } from "@minecraft/server";
 // TrackPlacement - Bedrock Dedicated Server behavior pack
 // UUID: 560fee0a-73c1-4f03-9c27-3ae8ba58344a
 //
-// (Optional) chat baseded operator commands require Beta APIs enabled.
+// (Optional) chat-based operator commands require Beta APIs enabled.
 // When enabled, commands are typed in chat (t or /) by operators:
 //
 //   track help
@@ -33,6 +33,7 @@ import { world, system } from "@minecraft/server";
 
 const FALLBACK_BLOCKS      = [{ id: "minecraft:tnt", label: "TNT", alert_color: "\u00a7c" }];
 const DEFAULT_WINDOW_TICKS = 200;
+const MAX_EVENT_LOG        = 1000; // max events kept in memory per server session
 const CLUSTER_RADIUS       = 8;
 const DISPENSER_ACTOR      = "_dispenser";
 const SESSION_MAX_TICKS    = 12000; // 10 minutes
@@ -54,10 +55,13 @@ let dispenserEntities  = null;
 let chatAlertsEnabled  = true;
 let chatCommandsActive = false;
 
-// eventLog entries: {type, actor, id, label, coords, dimId, wasIgnored}
+// eventLog entries: {type, actor, id, label, coords: {x,y,z}|null, dimId, wasIgnored}
+// Capped at MAX_EVENT_LOG entries (oldest discarded first).
 const eventLog       = [];
 // ignoredPlayers map: player name -> {by, time}
 const ignoredPlayers = new Map();
+// windows: actor -> { [type:itemId]: { coords: ({x,y,z}|null)[], total, timerId } }
+// Open rate-limit windows — accumulate burst events until the window timer fires.
 const windows        = {};
 
 // containerSessions: playerName -> {
@@ -85,6 +89,12 @@ async function loadConfig() {
         entitySet         = new Set((cfg.tracked_entity_interactions ?? []).map(e => e.id));
         dispenserEntities = new Set((cfg.dispenser_entities ?? []).map(e => e.id));
         chatAlertsEnabled = cfg.chat_alerts !== false;
+        // Warn about any config IDs that don't look like valid namespaced identifiers.
+        for (const id of [...blockMap.keys(), ...itemMap.keys(), ...containerSet, ...entitySet, ...dispenserEntities]) {
+            if (!id || !id.includes(":")) {
+                console.warn("[TrackPlacement] WARNING: Config ID '" + id + "' looks invalid - expected 'namespace:name' format (e.g. 'minecraft:tnt'). It will not match any in-game block or item.");
+            }
+        }
         console.log("[TrackPlacement] Config loaded - blocks: " + blockMap.size + ", items: " + itemMap.size + ", containers: " + containerSet.size + ", entities: " + entitySet.size + ", dispenser entities: " + dispenserEntities.size + ", chat alerts: " + chatAlertsEnabled);
     } catch (err) {
         console.log("[TrackPlacement] Could not load config (" + err + "), falling back to TNT only.");
@@ -107,11 +117,6 @@ function stripNamespace(id) {
 
 function formatCoords(loc) {
     return "(" + Math.floor(loc.x) + ", " + Math.floor(loc.y) + ", " + Math.floor(loc.z) + ")";
-}
-
-function parseCoords(str) {
-    const m = str.match(/\((-?\d+), (-?\d+), (-?\d+)\)/);
-    return m ? { x: +m[1], y: +m[2], z: +m[3] } : null;
 }
 
 function dist3d(a, b) {
@@ -141,15 +146,16 @@ function dimColored(dimId) {
     return d.color + d.name + "\u00a7r";
 }
 
+// coordList is an array of {x,y,z}|null. null entries (unknown location) form
+// their own singleton cluster so they still appear in output.
 function clusterCoords(coordList) {
     const clusters = [];
     for (const coord of coordList) {
-        const pt    = parseCoords(coord);
-        const match = pt && clusters.find(c => dist3d(c.anchorPt, pt) <= CLUSTER_RADIUS);
+        const match = coord && clusters.find(c => c.anchor && dist3d(c.anchor, coord) <= CLUSTER_RADIUS);
         if (match) {
             match.count++;
         } else {
-            clusters.push({ anchor: coord, anchorPt: pt, count: 1 });
+            clusters.push({ anchor: coord, count: 1 });
         }
     }
     return clusters;
@@ -157,10 +163,11 @@ function clusterCoords(coordList) {
 
 function formatClusters(clusters, coordColor, plain) {
     return clusters.map(c => {
-        const prefix = c.count > 1 ? "near " : "";
-        const loc    = plain
-            ? prefix + c.anchor
-            : prefix + coordColor + c.anchor + "\u00a7r";
+        const prefix    = c.count > 1 ? "near " : "";
+        const anchorStr = c.anchor ? formatCoords(c.anchor) : "(unknown)";
+        const loc = plain
+            ? prefix + anchorStr
+            : prefix + coordColor + anchorStr + "\u00a7r";
         return c.count > 1 ? loc + " (x" + c.count + ")" : loc;
     }).join(", ");
 }
@@ -205,12 +212,14 @@ function broadcastAlert(type, actor, label, itemId, clusters, dimId, color, tota
     for (const p of world.getAllPlayers()) p.sendMessage(msg);
 }
 
-// Always record to eventLog. Ignored players are logged with wasIgnored=true
-// but do not trigger console output or chat alerts.
+// Always record to eventLog (capped at MAX_EVENT_LOG). Ignored players are logged
+// with wasIgnored=true but do not trigger console output or chat alerts.
+// coords is a {x,y,z} object or null if the location was unavailable.
 function fireAlert(type, actor, label, itemId, coords, dimId, color, windowTicks) {
     const isIgnored = ignoredPlayers.has(actor);
     const total     = countPreviousEvents(actor, type, itemId);
     eventLog.push({ type, actor, id: itemId, label, coords, dimId, wasIgnored: isIgnored });
+    if (eventLog.length > MAX_EVENT_LOG) eventLog.shift();
     if (isIgnored) return;
     const key = type + ":" + itemId;
     const win = getWindow(actor, key);
@@ -292,7 +301,6 @@ function startContainerSession(player, block, dimension) {
     const blockTypeId = block.typeId;
     const dimId       = dimension.id;
     const alertTag    = CONTAINER_TAGS[blockTypeId] ?? "CONT_LOAD";
-    const coordStr    = formatCoords(blockPos);
     let lastSnap      = snapshotInventory(block);
     const intervalId  = system.runInterval(() => {
         const session = containerSessions.get(player.name);
@@ -326,7 +334,7 @@ function startContainerSession(player, block, dimension) {
             const meta = itemMap.get(typeId);
             if (!inAllowedDimension(meta, dimId)) continue;
             for (let i = 0; i < countAdded; i++) {
-                fireAlert(alertTag, player.name, meta.label, typeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
+                fireAlert(alertTag, player.name, meta.label, typeId, blockPos, dimId, meta.alert_color, meta.window_ticks);
             }
         }
     }, SESSION_SNAP_TICKS);
@@ -390,7 +398,8 @@ function cmdOffenders(sender, countArg) {
     recent.forEach((e, i) => {
         const actor      = e.actor === DISPENSER_ACTOR ? "Dispenser" : e.actor;
         const ignoredTag = e.wasIgnored ? " \u00a77(ignored, not alerted)\u00a7r" : "";
-        sender.sendMessage("  \u00a77#" + (i + 1) + " \u00a7e" + actor + "\u00a7r | \u00a7f" + e.label + "\u00a7r | \u00a7b" + e.coords + "\u00a7r | " + dimColored(e.dimId) + " | \u00a77" + e.type + "\u00a7r" + ignoredTag);
+        const coordStr   = e.coords ? formatCoords(e.coords) : "(unknown)";
+        sender.sendMessage("  \u00a77#" + (i + 1) + " \u00a7e" + actor + "\u00a7r | \u00a7f" + e.label + "\u00a7r | \u00a7b" + coordStr + "\u00a7r | " + dimColored(e.dimId) + " | \u00a77" + e.type + "\u00a7r" + ignoredTag);
     });
 }
 
@@ -468,15 +477,15 @@ function tryRegisterChatCommands() {
 function registerListeners() {
     // Block placements
     world.afterEvents.playerPlaceBlock.subscribe((event) => {
-        let blockTypeId, playerName, dimId, coordStr;
-        try { blockTypeId = event.block.typeId;                } catch { return; } // can't identify item - nothing to alert
+        let blockTypeId, playerName, dimId, coords;
+        try { blockTypeId = event.block.typeId;                                                       } catch { return; } // can't identify block - nothing to alert
         if (!blockMap.has(blockTypeId)) return;
         const meta = blockMap.get(blockTypeId);
-        try { playerName = event.player.name;                  } catch { playerName = "(unknown)"; }
-        try { dimId      = event.dimension.id;                 } catch { dimId      = "unknown"; }
-        try { coordStr   = formatCoords(event.block.location); } catch { coordStr   = "(unknown)"; }
+        try { playerName = event.player.name;                                                         } catch { playerName = "(unknown)"; }
+        try { dimId      = event.dimension.id;                                                        } catch { dimId      = "unknown"; }
+        try { const l = event.block.location; coords = { x: l.x, y: l.y, z: l.z };                  } catch { coords = null; }
         if (dimId !== "unknown" && !inAllowedDimension(meta, dimId)) return;
-        fireAlert("PLACE", playerName, meta.label, blockTypeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
+        fireAlert("PLACE", playerName, meta.label, blockTypeId, coords, dimId, meta.alert_color, meta.window_ticks);
     });
     // Container sessions - player opens a tracked container
     world.afterEvents.playerInteractWithBlock.subscribe((event) => {
@@ -487,29 +496,29 @@ function registerListeners() {
     });
     // Entity interactions - tracked item held while interacting
     world.afterEvents.playerInteractWithEntity.subscribe((event) => {
-        let playerName, dimId, targetTypeId, itemTypeId, coordStr;
-        try { itemTypeId   = event.itemStack?.typeId;                          } catch { return; } // no item - nothing to alert
+        let playerName, dimId, targetTypeId, itemTypeId, coords;
+        try { itemTypeId   = event.itemStack?.typeId;                                                } catch { return; } // no item - nothing to alert
         if (!itemTypeId || !itemMap.has(itemTypeId)) return;
-        try { targetTypeId = event.target.typeId;                              } catch { targetTypeId = "(unknown)"; }
-        try { playerName   = event.player.name;                                } catch { playerName   = "(unknown)"; }
-        try { dimId        = (event.dimension ?? event.player?.dimension)?.id; } catch { dimId        = "unknown"; }
-        try { coordStr     = formatCoords(event.target.location);              } catch { coordStr     = "(unknown)"; }
+        try { targetTypeId = event.target.typeId;                                                    } catch { targetTypeId = "(unknown)"; }
+        try { playerName   = event.player.name;                                                      } catch { playerName   = "(unknown)"; }
+        try { dimId        = (event.dimension ?? event.player?.dimension)?.id;                       } catch { dimId        = "unknown"; }
+        try { const l = event.target.location; coords = { x: l.x, y: l.y, z: l.z };                } catch { coords = null; }
         if (targetTypeId !== "(unknown)" && !entitySet.has(targetTypeId)) return;
         const meta = itemMap.get(itemTypeId);
         if (dimId !== "unknown" && !inAllowedDimension(meta, dimId)) return;
-        fireAlert("ENTITY", playerName, meta.label, itemTypeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
+        fireAlert("ENTITY", playerName, meta.label, itemTypeId, coords, dimId, meta.alert_color, meta.window_ticks);
     });
     // Craft / pickup
     world.afterEvents.playerInventoryItemChange.subscribe((event) => {
         const { player, itemStack, changeType } = event;
         if (changeType !== "added" || !itemStack || !itemMap.has(itemStack.typeId)) return;
         const meta = itemMap.get(itemStack.typeId);
-        let playerName, dimId, coordStr;
-        try { playerName = player.name;                   } catch { playerName = "(unknown)"; }
-        try { dimId      = player.dimension.id;           } catch { dimId      = "unknown"; }
-        try { coordStr   = formatCoords(player.location); } catch { coordStr   = "(unknown)"; }
+        let playerName, dimId, coords;
+        try { playerName = player.name;                                               } catch { playerName = "(unknown)"; }
+        try { dimId      = player.dimension.id;                                       } catch { dimId      = "unknown"; }
+        try { const l = player.location; coords = { x: l.x, y: l.y, z: l.z };       } catch { coords = null; }
         if (dimId !== "unknown" && !inAllowedDimension(meta, dimId)) return;
-        fireAlert("PICKUP", playerName, meta.label, itemStack.typeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
+        fireAlert("PICKUP", playerName, meta.label, itemStack.typeId, coords, dimId, meta.alert_color, meta.window_ticks);
     });
     // Dispenser / dropper fires tracked entity
     world.afterEvents.entitySpawn.subscribe((event) => {
@@ -519,38 +528,37 @@ function registerListeners() {
         const meta   = itemMap.has(typeId)
             ? itemMap.get(typeId)
             : { label: stripNamespace(typeId), alert_color: "\u00a76", window_ticks: DEFAULT_WINDOW_TICKS, dimensions: null };
-        let spawnX, spawnY, spawnZ, dimId;
+        let coords, dimId;
         try {
-            spawnX = Math.floor(entity.location.x);
-            spawnY = Math.floor(entity.location.y);
-            spawnZ = Math.floor(entity.location.z);
+            const l = entity.location;
+            coords = { x: Math.floor(l.x), y: Math.floor(l.y), z: Math.floor(l.z) };
             dimId  = entity.dimension.id;
         } catch {
             // Entity invalidated before location could be read - fire alert without coordinates
-            fireDispenserAlert(meta.label, typeId, "(unknown)", "unknown", meta.alert_color, meta.window_ticks);
+            fireDispenserAlert(meta.label, typeId, null, "unknown", meta.alert_color, meta.window_ticks);
             return;
         }
-        const coordStr = "(" + spawnX + ", " + spawnY + ", " + spawnZ + ")";
         const offsets = [{x:1,y:0,z:0},{x:-1,y:0,z:0},{x:0,y:0,z:1},{x:0,y:0,z:-1},{x:0,y:1,z:0},{x:0,y:-1,z:0}];
         let dim;
         try { dim = world.getDimension(dimId); } catch { dim = null; }
         if (!dim) {
             // Can't verify dispenser source but we know a tracked entity spawned - alert anyway
-            fireDispenserAlert(meta.label, typeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
+            fireDispenserAlert(meta.label, typeId, coords, dimId, meta.alert_color, meta.window_ticks);
             return;
         }
         const fromDispenser = offsets.some(o => {
             try {
-                const b = dim.getBlock({ x: spawnX + o.x, y: spawnY + o.y, z: spawnZ + o.z });
+                const b = dim.getBlock({ x: coords.x + o.x, y: coords.y + o.y, z: coords.z + o.z });
                 return b && (b.typeId === "minecraft:dispenser" || b.typeId === "minecraft:dropper");
             } catch { return false; }
         });
         if (!fromDispenser) return;
-        fireDispenserAlert(meta.label, typeId, coordStr, dimId, meta.alert_color, meta.window_ticks);
+        fireDispenserAlert(meta.label, typeId, coords, dimId, meta.alert_color, meta.window_ticks);
     });
-    // Clean up container sessions on player disconnect
+    // Clean up container sessions and rate-limit windows on player disconnect
     world.afterEvents.playerLeave.subscribe((event) => {
         endContainerSession(event.playerName);
+        delete windows[event.playerName];
     });
     tryRegisterChatCommands();
 }
