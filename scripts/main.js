@@ -58,11 +58,19 @@ let chatCommandsActive = false;
 // eventLog entries: {type, actor, id, label, coords: {x,y,z}|null, dimId, wasIgnored}
 // Capped at MAX_EVENT_LOG entries (oldest discarded first).
 const eventLog       = [];
+// eventCounts: "actor\0type\0itemId" -> monotonically increasing count.
+// Kept separate from eventLog so the #N counter never resets when the log caps.
+const eventCounts    = {};
 // ignoredPlayers map: player name -> {by, time}
 const ignoredPlayers = new Map();
 // windows: actor -> { [type:itemId]: { coords: ({x,y,z}|null)[], total, timerId } }
 // Open rate-limit windows — accumulate burst events until the window timer fires.
 const windows        = {};
+// recentlyRemovedItems: playerName -> Set<typeId>
+// Tracks tracked items removed from inventory within the last 2 ticks. Used to
+// suppress the paired "added" event that Bedrock fires when a player moves an
+// item between inventory slots (slot moves emit "removed" + "added" for the same item).
+const recentlyRemovedItems = new Map();
 
 // containerSessions: playerName -> {
 //   blockTypeId, blockPos, dimId,
@@ -173,7 +181,8 @@ function formatClusters(clusters, coordColor, plain) {
 }
 
 function countPreviousEvents(actor, type, itemId) {
-    return eventLog.filter(e => e.actor === actor && e.type === type && e.id === itemId).length + 1;
+    const key = actor + "\0" + type + "\0" + itemId;
+    return (eventCounts[key] = (eventCounts[key] ?? 0) + 1);
 }
 
 // --------------------------------------------------------------------------
@@ -296,6 +305,8 @@ function endContainerSession(playerName) {
 }
 
 function startContainerSession(player, block, dimension) {
+    // Only one container is tracked per player at a time. Opening a second
+    // container while one is active silently ends the first session.
     endContainerSession(player.name);
     const blockPos    = { x: block.location.x, y: block.location.y, z: block.location.z };
     const blockTypeId = block.typeId;
@@ -455,8 +466,13 @@ function tryRegisterChatCommands() {
         if (!world.beforeEvents || typeof world.beforeEvents.chatSend?.subscribe !== "function") {
             throw new Error("chatSend not available");
         }
+        const VALID_SUBS = new Set(["help", "ignore", "offenders", "announce"]);
         world.beforeEvents.chatSend.subscribe((event) => {
-            if (!event.message.startsWith("track ")) return;
+            // Only intercept "track <valid-subcommand>" to avoid silently swallowing
+            // legitimate chat that happens to start with the word "track".
+            const parts = event.message.trim().split(/\s+/);
+            if (parts[0] !== "track") return;
+            if (parts.length > 1 && !VALID_SUBS.has(parts[1])) return;
             event.cancel = true;
             const sender  = event.sender;
             const message = event.message;
@@ -503,22 +519,46 @@ function registerListeners() {
         try { playerName   = event.player.name;                                                      } catch { playerName   = "(unknown)"; }
         try { dimId        = (event.dimension ?? event.player?.dimension)?.id;                       } catch { dimId        = "unknown"; }
         try { const l = event.target.location; coords = { x: l.x, y: l.y, z: l.z };                } catch { coords = null; }
+        // Alert if interacting with a configured entity, or with any entity whose type
+        // could not be read (targetTypeId = "(unknown)") — better a false positive than
+        // a missed alert caused by a transient API failure.
         if (targetTypeId !== "(unknown)" && !entitySet.has(targetTypeId)) return;
         const meta = itemMap.get(itemTypeId);
         if (dimId !== "unknown" && !inAllowedDimension(meta, dimId)) return;
         fireAlert("ENTITY", playerName, meta.label, itemTypeId, coords, dimId, meta.alert_color, meta.window_ticks);
     });
-    // Craft / pickup
+    // Craft / pickup — watches both "removed" and "added" change types.
+    // Bedrock fires "removed" + "added" for the same item when a player moves it
+    // between inventory slots. We suppress the "added" alert in that case by
+    // recording the "removed" event in recentlyRemovedItems and checking it when
+    // the paired "added" arrives (both events fire within the same tick or the next).
     world.afterEvents.playerInventoryItemChange.subscribe((event) => {
         const { player, itemStack, changeType } = event;
-        if (changeType !== "added" || !itemStack || !itemMap.has(itemStack.typeId)) return;
-        const meta = itemMap.get(itemStack.typeId);
-        let playerName, dimId, coords;
-        try { playerName = player.name;                                               } catch { playerName = "(unknown)"; }
-        try { dimId      = player.dimension.id;                                       } catch { dimId      = "unknown"; }
-        try { const l = player.location; coords = { x: l.x, y: l.y, z: l.z };       } catch { coords = null; }
+        if (!itemStack || !itemMap.has(itemStack.typeId)) return;
+        const typeId = itemStack.typeId;
+        let playerName;
+        try { playerName = player.name; } catch { playerName = null; }
+        if (changeType === "removed") {
+            if (playerName) {
+                if (!recentlyRemovedItems.has(playerName)) recentlyRemovedItems.set(playerName, new Set());
+                recentlyRemovedItems.get(playerName).add(typeId);
+                // Clear after 2 ticks — enough time for the paired "added" to fire.
+                system.runTimeout(() => {
+                    const s = recentlyRemovedItems.get(playerName);
+                    if (s) { s.delete(typeId); if (s.size === 0) recentlyRemovedItems.delete(playerName); }
+                }, 2);
+            }
+            return;
+        }
+        if (changeType !== "added") return;
+        // Skip if a matching "removed" was seen this tick — item was only moved between slots.
+        if (playerName && recentlyRemovedItems.get(playerName)?.has(typeId)) return;
+        const meta = itemMap.get(typeId);
+        let dimId, coords;
+        try { dimId = player.dimension.id;                                      } catch { dimId   = "unknown"; }
+        try { const l = player.location; coords = { x: l.x, y: l.y, z: l.z }; } catch { coords  = null; }
         if (dimId !== "unknown" && !inAllowedDimension(meta, dimId)) return;
-        fireAlert("PICKUP", playerName, meta.label, itemStack.typeId, coords, dimId, meta.alert_color, meta.window_ticks);
+        fireAlert("PICKUP", playerName ?? "(unknown)", meta.label, typeId, coords, dimId, meta.alert_color, meta.window_ticks);
     });
     // Dispenser / dropper fires tracked entity
     world.afterEvents.entitySpawn.subscribe((event) => {
@@ -555,10 +595,11 @@ function registerListeners() {
         if (!fromDispenser) return;
         fireDispenserAlert(meta.label, typeId, coords, dimId, meta.alert_color, meta.window_ticks);
     });
-    // Clean up container sessions and rate-limit windows on player disconnect
+    // Clean up all per-player state on disconnect
     world.afterEvents.playerLeave.subscribe((event) => {
         endContainerSession(event.playerName);
         delete windows[event.playerName];
+        recentlyRemovedItems.delete(event.playerName);
     });
     tryRegisterChatCommands();
 }
