@@ -225,6 +225,10 @@ function fireAlert(type, actor, label, itemId, coords, dimId, color, windowTicks
             logEntry(type + " +more", actor, label, itemId, summaryClusters, dimName(dimId), w.total);
             system.run(() => broadcastAlert(type + " +more", actor, label, itemId, summaryClusters, dimId, color, w.total));
             clearWindow(actor, key);
+        // windowTicks=0 means "no clustering window"; use 1 tick as the minimum
+        // valid runTimeout value. The first alert already fired immediately above,
+        // so this timeout only handles any burst events that sneak in within that
+        // single tick — in practice the summary will be skipped (coords.length <= 1).
         }, windowTicks > 0 ? windowTicks : 1);
         setWindow(actor, key, { coords: [coords], total, timerId });
     } else {
