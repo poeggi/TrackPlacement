@@ -4,7 +4,7 @@ import { world, system } from "@minecraft/server";
 // TrackPlacement - Bedrock Dedicated Server behavior pack
 // UUID: 560fee0a-73c1-4f03-9c27-3ae8ba58344a
 //
-// Operator commands require Beta APIs to be enabled on the world.
+// (Optional) chat baseded operator commands require Beta APIs enabled.
 // When enabled, commands are typed in chat (t or /) by operators:
 //
 //   track help
@@ -18,10 +18,10 @@ import { world, system } from "@minecraft/server";
 //   Option A - In-game: world settings -> Experiments -> Beta APIs -> ON
 //   Option B - level.dat: set experiments.gametest = 1
 //
-// Without Beta APIs, tracking and alerts still work fully.
+// Even without Beta APIs, tracking and alerts still work fully.
 // Only the operator chat commands are unavailable.
 //
-// Alert tags:
+// Alert tags (as used in logs):
 //   [PLACE]      - tracked block placed directly in world
 //   [PICKUP]     - tracked item acquired via craft or pickup
 //   [ENTITY]     - tracked item held when interacting with entity
@@ -67,7 +67,7 @@ const windows        = {};
 const containerSessions = new Map();
 
 // --------------------------------------------------------------------------
-// Config
+// Config load
 // --------------------------------------------------------------------------
 
 async function loadConfig() {
@@ -98,7 +98,7 @@ async function loadConfig() {
 }
 
 // --------------------------------------------------------------------------
-// Utilities
+// Utility functions
 // --------------------------------------------------------------------------
 
 function stripNamespace(id) {
@@ -170,7 +170,7 @@ function countPreviousEvents(actor, type, itemId) {
 }
 
 // --------------------------------------------------------------------------
-// Rate-limit windows
+// Rate-limit window functions
 // --------------------------------------------------------------------------
 
 function getWindow(actor, key) {
@@ -187,7 +187,7 @@ function clearWindow(actor, key) {
 }
 
 // --------------------------------------------------------------------------
-// Output
+// Output functions
 // --------------------------------------------------------------------------
 
 function logEntry(type, actor, label, itemId, clusters, dimension, total) {
@@ -246,7 +246,7 @@ function fireDispenserAlert(label, itemId, coords, dimId, color, windowTicks) {
 //      Fire an alert for any tracked item that appeared since last snap.
 //   3. Each interval, check if the player has moved > SESSION_CLOSE_DIST
 //      blocks from the container. If so, end the session.
-//   4. Hard cap at SESSION_MAX_TICKS (10 minutes).
+//   4. Hard cap at SESSION_MAX_TICKS (Default: 10 minutes).
 //   5. Also ended on playerLeave.
 // --------------------------------------------------------------------------
 
@@ -333,8 +333,8 @@ function startContainerSession(player, block, dimension) {
 }
 
 // --------------------------------------------------------------------------
-// Operator commands
-// Requires Beta APIs. Registered only if detected at startup.
+// Operator command related functions
+// NOTE: Requires Beta APIs. Registered only if detected at startup.
 // Uses beforeEvents.chatSend to cancel the message so it stays silent.
 // --------------------------------------------------------------------------
 
@@ -552,7 +552,7 @@ function registerListeners() {
 }
 
 // --------------------------------------------------------------------------
-// Startup
+// Startup (main)
 // --------------------------------------------------------------------------
 
 loadConfig().then(() => {
