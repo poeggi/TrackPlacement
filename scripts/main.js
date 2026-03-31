@@ -39,6 +39,7 @@ const DISPENSER_ACTOR      = "_dispenser";
 const SESSION_MAX_TICKS    = 12000; // 10 minutes
 const SESSION_SNAP_TICKS   = 20;   // snapshot interval - 1 second
 const SESSION_CLOSE_DIST   = 6;    // blocks - player walked away
+const DISPENSER_CACHE_TICKS = 1200; // 1 minute - how long a verified dispenser position is trusted
 
 // Container typeId -> alert tag
 const CONTAINER_TAGS = {
@@ -77,6 +78,9 @@ const recentlyRemovedItems = new Map();
 //   intervalId, timeoutId
 // }
 const containerSessions = new Map();
+// dispenserCache: "dimId|x|y|z" -> expiry tick
+// Caches verified dispenser/dropper positions to avoid 6 getBlock() calls per entity spawn.
+const dispenserCache = new Map();
 
 // --------------------------------------------------------------------------
 // Config load
@@ -586,15 +590,57 @@ function registerListeners() {
             fireDispenserAlert(meta.label, typeId, coords, dimId, meta.alert_color, meta.window_ticks);
             return;
         }
-        const fromDispenser = offsets.some(o => {
+        const now = system.currentTick;
+        // Fast path: check if any neighbor is a cached/known dispenser position.
+        let cachedNeighbor = null;
+        for (const o of offsets) {
+            const nx = coords.x + o.x, ny = coords.y + o.y, nz = coords.z + o.z;
+            const key = dimId + "|" + nx + "|" + ny + "|" + nz;
+            const expiry = dispenserCache.get(key);
+            if (expiry !== undefined) {
+                if (now <= expiry) { cachedNeighbor = { key, pos: { x: nx, y: ny, z: nz } }; break; }
+                dispenserCache.delete(key);
+            }
+        }
+        if (cachedNeighbor !== null) {
+            // Re-validate with a single getBlock() call before trusting the cache.
+            let stillValid = false;
             try {
-                const b = dim.getBlock({ x: coords.x + o.x, y: coords.y + o.y, z: coords.z + o.z });
-                return b && (b.typeId === "minecraft:dispenser" || b.typeId === "minecraft:dropper");
+                const b = dim.getBlock(cachedNeighbor.pos);
+                stillValid = b && (b.typeId === "minecraft:dispenser" || b.typeId === "minecraft:dropper");
+            } catch { /* ignore */ }
+            if (stillValid) {
+                dispenserCache.set(cachedNeighbor.key, now + DISPENSER_CACHE_TICKS);
+                fireDispenserAlert(meta.label, typeId, coords, dimId, meta.alert_color, meta.window_ticks);
+                return;
+            }
+            dispenserCache.delete(cachedNeighbor.key);
+            // Fall through to full 6-block check below.
+        }
+        // Full check: scan all 6 neighbors. Cache the position if a dispenser is found.
+        let foundKey = null;
+        const fromDispenser = offsets.some(o => {
+            const nx = coords.x + o.x, ny = coords.y + o.y, nz = coords.z + o.z;
+            try {
+                const b = dim.getBlock({ x: nx, y: ny, z: nz });
+                if (b && (b.typeId === "minecraft:dispenser" || b.typeId === "minecraft:dropper")) {
+                    foundKey = dimId + "|" + nx + "|" + ny + "|" + nz;
+                    return true;
+                }
             } catch { return false; }
+            return false;
         });
         if (!fromDispenser) return;
+        if (foundKey) dispenserCache.set(foundKey, now + DISPENSER_CACHE_TICKS);
         fireDispenserAlert(meta.label, typeId, coords, dimId, meta.alert_color, meta.window_ticks);
     });
+    // Periodically evict expired dispenser cache entries.
+    system.runInterval(() => {
+        const now = system.currentTick;
+        for (const [key, expiry] of dispenserCache) {
+            if (now > expiry) dispenserCache.delete(key);
+        }
+    }, 1200);
     // Clean up all per-player state on disconnect
     world.afterEvents.playerLeave.subscribe((event) => {
         endContainerSession(event.playerName);
