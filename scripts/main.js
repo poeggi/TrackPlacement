@@ -4,8 +4,11 @@ import { world, system } from "@minecraft/server";
 // TrackPlacement - Bedrock Dedicated Server behavior pack
 // UUID: 560fee0a-73c1-4f03-9c27-3ae8ba58344a
 //
-// (Optional) chat-based operator commands require Beta APIs enabled.
-// When enabled, commands are typed in chat (t or /) by operators:
+// (Optional) chat-based operator commands require the chatSend API.
+// As of BDS 1.26.20.5 (@minecraft/server 2.7.0, May 2026) this requires Beta APIs
+// enabled on the world. Later versions may expose it without Beta APIs — availability
+// is detected automatically at startup, no code changes needed.
+// When available, commands are typed in chat (t or /) by operators:
 //
 //   track help
 //   track ignore add <player>
@@ -483,10 +486,10 @@ function tryRegisterChatCommands() {
             system.run(() => handleCommand(sender, message));
         });
         chatCommandsActive = true;
-        console.log("[TrackPlacement] Beta APIs detected - chat commands active. Type 'track help' in chat.");
+        console.log("[TrackPlacement] Chat commands active (chatSend API available). Type 'track help' in chat.");
     } catch (e) {
         chatCommandsActive = false;
-        console.log("[TrackPlacement] Beta APIs not enabled - chat commands inactive. Enable Beta APIs on this world to use operator commands.");
+        console.log("[TrackPlacement] Chat commands inactive (chatSend API unavailable). On current BDS versions, enable Beta APIs on this world to activate them.");
     }
 }
 

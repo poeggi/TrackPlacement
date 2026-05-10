@@ -13,14 +13,14 @@ A server-side Bedrock Dedicated Server (BDS) behavior pack that monitors placeme
 - Rate-limiting with configurable windows - bursts are summarised rather than spammed
 - Nearby events are clustered by location to reduce noise
 - All events logged to console regardless of in-game alert settings
-- Operator commands available when Beta APIs are enabled on the world
+- Operator commands via chat (auto-detected at startup; currently requires Beta APIs on the world)
 
 ## Requirements
 
 - Minecraft Bedrock Dedicated Server 1.21.0 or later
 - `@minecraft/server` API version 2.1.0 (stable, no experiments required for core log-based tracking)
-- NOTE: Beta APIs experiment enabled on the world **only if** you want operator chat commands
-- NOTE: Beta APIs will invalidate world achievements - only use if you know what you are doing
+- Operator chat commands require the `chatSend` API — as of BDS 1.26.20.5 this means enabling Beta APIs on the world. If a future BDS version exposes this API without Beta APIs, commands will activate automatically with no changes needed.
+- **Warning:** Enabling Beta APIs disables world achievements permanently. Only enable it if you accept this trade-off.
 
 ## Installation
 
@@ -106,7 +106,9 @@ Beds are harmless in the Overworld but explode instantly in the Nether and The E
 
 ## Operator commands
 
-Chat commands require **Beta APIs** to be enabled on the world. When enabled, type the following directly in chat (press `t` or `/`):
+Chat commands require the `chatSend` API, which is detected automatically at startup. As of BDS 1.26.20.5 (@minecraft/server 2.7.0, May 2026) this API requires **Beta APIs** enabled on the world. If a future BDS version makes it available without Beta APIs, commands will activate automatically — no code changes needed.
+
+Type the following directly in chat (press `t` or `/`):
 
 | Command | Description |
 |---|---|
@@ -121,7 +123,9 @@ Commands are silently cancelled from chat - other players will not see them.
 
 ### Enabling Beta APIs
 
-**Option A - In-game:** Open world settings -> Experiments -> enable Beta APIs, then restart.
+> **Warning:** Enabling Beta APIs permanently disables achievements for that world. Only do this if you accept that trade-off.
+
+**Option A - In-game:** Open world settings → Experiments → enable Beta APIs, then restart.
 
 **Option B - level.dat:** Set `experiments.gametest = 1` in the world's `level.dat` file.
 
