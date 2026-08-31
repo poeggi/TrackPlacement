@@ -21,5 +21,10 @@
       "module_name": "@minecraft/server",
       "version": "2.1.0"
     }
-  ]
+  ],
+  "metadata": {
+    "authors": ["poeggi"],
+    "license": "AGPL-3.0-or-later",
+    "url": "https://github.com/poeggi/TrackPlacement"
+  }
 }
